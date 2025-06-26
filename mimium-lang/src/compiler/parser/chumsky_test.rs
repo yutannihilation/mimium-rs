@@ -7,7 +7,7 @@ pub enum Expr {
     Let((String, Box<Expr>, Box<Expr>)),
 }
 
-pub fn parsetester() -> impl Parser<char, Expr, Error = Simple<char>> {
+pub fn parsetester() -> impl Parser<char, Expr, Error = Rich<'src, char>> {
     let int = text::int(10)
         .labelled("integer")
         .map(|v: String| Expr::Int(v.parse().unwrap()));

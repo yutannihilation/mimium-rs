@@ -4,7 +4,8 @@ use crate::utils::metadata::*;
 use chumsky::prelude::*;
 use chumsky::Parser;
 
-fn comment_parser() -> impl Parser<char, Comment, Error = Simple<char>> + Clone {
+fn comment_parser<'src>(
+) -> impl Parser<'src, &'src str, Comment, extra::Err<Rich<'src, char>>> + Clone {
     // comment parser that keep its contents length, not to break line number for debugging.
     // replaces all characters except for newline.
     let single_line = (just("//"))
@@ -17,13 +18,15 @@ fn comment_parser() -> impl Parser<char, Comment, Error = Simple<char>> + Clone 
 
     single_line.or(multi_line)
 }
-fn linebreak_parser() -> impl Parser<char, Token, Error = Simple<char>> + Clone {
+fn linebreak_parser<'src>(
+) -> impl Parser<'src, &'src str, Token, extra::Err<Rich<'src, char>>> + Clone {
     text::newline()
         .repeated()
         .at_least(1)
         .map(|_s| Token::LineBreak)
 }
-pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
+pub fn lexer<'src>(
+) -> impl Parser<'src, &'src str, Vec<(Token, Span)>, extra::Err<Rich<'src, char>>> {
     // A parser for numbers
     let int = text::int(10).map(|s: String| Token::Int(s.parse().unwrap()));
 
@@ -105,7 +108,7 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
         .then_ignore(just('!'))
         .map(|ident: String| Token::MacroExpand(ident.to_symbol()));
 
-    let parens = one_of::<_, _, Simple<char>>("(){}[]").map(|c| match c {
+    let parens = one_of::<_, _, extra::Err<Rich<'src, char>>>("(){}[]").map(|c| match c {
         '(' => Token::ParenBegin,
         ')' => Token::ParenEnd,
         '{' => Token::BlockBegin,

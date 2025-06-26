@@ -26,9 +26,11 @@ mod test;
 struct ParseContext {
     file_path: Symbol,
 }
-pub(crate) type ParseError = Simple<Token>;
+pub(crate) type ParseError<'src> = Rich<'src, Token>;
 
-fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = ParseError> + Clone {
+fn type_parser<'src>(
+    ctx: ParseContext,
+) -> impl Parser<'src, &'src [Token], TypeNodeId, extra::Err<ParseError<'src>>> + Clone {
     let path = ctx.file_path;
     recursive(move |ty| {
         let primitive = select! {
@@ -36,15 +38,19 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
            Token::IntegerType => Type::Primitive(PType::Int),
            Token::StringType => Type::Primitive(PType::String)
         }
-        .map_with_span(move |t, span| t.into_id_with_location(Location::new(span, path)));
+        .map_with(move |t: Type, ex| {
+            let span: SimpleSpan = ex.span();
+            t.into_id_with_location(Location::new(span.into_range(), path))
+        });
 
         let tuple = ty
             .clone()
             .separated_by(just(Token::Comma))
             .allow_trailing()
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
-            .map_with_span(move |t: Vec<TypeNodeId>, span: Span| {
-                Type::Tuple(t).into_id_with_location(Location::new(span, path))
+            .map_with(move |t, ex| {
+                let span: SimpleSpan = ex.span();
+                Type::Tuple(t).into_id_with_location(Location::new(span.into_range(), path))
             })
             .boxed()
             .labelled("Tuple");
@@ -56,8 +62,10 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             .separated_by(just(Token::Comma))
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
             .then(just(Token::Arrow).ignore_then(ty.clone()))
-            .map_with_span(move |(a, e), span| {
-                Type::Function(a, e, None).into_id_with_location(Location::new(span, path))
+            .map_with(move |(a, e), ex| {
+                let span: SimpleSpan = ex.span();
+                Type::Function(a, e, None)
+                    .into_id_with_location(Location::new(span.into_range(), path))
             })
             .boxed()
             .labelled("function");
@@ -65,12 +73,13 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
         func.or(atom).labelled("Type")
     })
 }
-fn ident_parser() -> impl Parser<Token, Symbol, Error = ParseError> + Clone {
+fn ident_parser<'src>(
+) -> impl Parser<'src, &'src [Token], Symbol, extra::Err<ParseError<'src>>> + Clone {
     select! { Token::Ident(s) => s }.labelled("ident")
 }
-fn literals_parser(
+fn literals_parser<'src>(
     ctx: ParseContext,
-) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone {
+) -> impl Parser<'src, &'src [Token], ExprNodeId, extra::Err<ParseError<'src>>> + Clone {
     select! {
         //Currently Integer literals are treated as float until the integer type is introduced in type system.
         // Token::Int(x) => Literal::Int(x),
@@ -82,51 +91,56 @@ fn literals_parser(
         Token::SampleRate => Literal::SampleRate,
         Token::PlaceHolder => Literal::PlaceHolder,
     }
-    .map_with_span(move |e, span| {
+    .map_with(move |e, ex| {
+        let span: SimpleSpan = ex.span();
         Expr::Literal(e).into_id(Location {
-            span,
+            span: span.into_range(),
             path: ctx.file_path,
         })
     })
     .labelled("literal")
 }
-fn var_parser(ctx: ParseContext) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone {
-    ident_parser().map_with_span(move |e, span| {
+fn var_parser<'src>(
+    ctx: ParseContext,
+) -> impl Parser<'src, &'src [Token], ExprNodeId, extra::Err<ParseError<'src>>> + Clone {
+    ident_parser().map_with(move |e, ex| {
         Expr::Var(e).into_id(Location {
-            span,
+            span: ex.span().into_range(),
             path: ctx.file_path,
         })
     })
 }
-fn with_type_annotation<P, O>(
+fn with_type_annotation<'src, P, O>(
     parser: P,
     ctx: ParseContext,
-) -> impl Parser<Token, (O, Option<TypeNodeId>), Error = ParseError> + Clone
+) -> impl Parser<'src, &'src [Token], (O, Option<TypeNodeId>), extra::Err<ParseError<'src>>> + Clone
 where
-    P: Parser<Token, O, Error = ParseError> + Clone,
+    P: Parser<'src, &'src [Token], O, extra::Err<ParseError<'src>>> + Clone,
 {
     parser
         .then(just(Token::Colon).ignore_then(type_parser(ctx)).or_not())
         .map(|(id, t)| (id, t))
 }
 
-fn lvar_parser_typed(ctx: ParseContext) -> impl Parser<Token, TypedId, Error = ParseError> + Clone {
+fn lvar_parser_typed<'src>(
+    ctx: ParseContext,
+) -> impl Parser<'src, &'src [Token], TypedId, extra::Err<ParseError<'src>>> + Clone {
     with_type_annotation(ident_parser(), ctx.clone())
-        .map_with_span(move |(sym, t), span| match t {
+        .map_with(move |(sym, t), ex| match t {
             Some(ty) => TypedId { id: sym, ty },
             None => TypedId {
                 id: sym,
                 ty: Type::Unknown.into_id_with_location(Location {
-                    span,
+                    span: ex.span().into_range(),
                     path: ctx.file_path,
                 }),
             },
         })
         .labelled("lvar_typed")
 }
-fn pattern_parser(
+fn pattern_parser<'src>(
     ctx: ParseContext,
-) -> impl Parser<Token, TypedPattern, Error = ParseError> + Clone {
+) -> impl Parser<'src, &'src [Token], TypedPattern, extra::Err<ParseError<'src>>> + Clone {
     let pat = recursive(|pat| {
         pat.clone()
             .separated_by(just(Token::Comma))
@@ -141,25 +155,25 @@ fn pattern_parser(
             })
             .labelled("Pattern")
     });
-    with_type_annotation(pat, ctx.clone()).map_with_span(move |(pat, ty), span| match ty {
+    with_type_annotation(pat, ctx.clone()).map_with(move |(pat, ty), ex| match ty {
         Some(ty) => TypedPattern { pat, ty },
         None => TypedPattern {
             pat,
             ty: Type::Unknown.into_id_with_location(Location {
-                span,
+                span: ex.span().into_range(),
                 path: ctx.file_path,
             }),
         },
     })
 }
-fn binop_folder<'a, I, OP>(
+fn binop_folder<'src, I, OP>(
     prec: I,
     op: OP,
     ctx: ParseContext,
-) -> BoxedParser<'a, Token, ExprNodeId, ParseError>
+) -> Boxed<'src, 'src, &'src [Token], ExprNodeId, extra::Err<ParseError<'src>>>
 where
-    I: Parser<Token, ExprNodeId, Error = ParseError> + Clone + 'a,
-    OP: Parser<Token, (Op, Span), Error = ParseError> + Clone + 'a,
+    I: Parser<'src, &'src [Token], ExprNodeId, extra::Err<ParseError<'src>>> + Clone,
+    OP: Parser<'src, &'src [Token], (Op, Span), extra::Err<ParseError<'src>>> + Clone,
 {
     prec.clone()
         .then(
@@ -191,26 +205,26 @@ where
         .boxed()
 }
 
-type ExprParser<'a> = Recursive<'a, Token, ExprNodeId, ParseError>;
+type ExprParser<'src> = Recursive<'src, &'src [Token], ExprNodeId, extra::Err<ParseError<'src>>>;
 
-fn items_parser(
-    expr: ExprParser<'_>,
-) -> impl Parser<Token, Vec<ExprNodeId>, Error = ParseError> + Clone + '_ {
+fn items_parser<'src>(
+    expr: ExprParser<'src>,
+) -> impl Parser<'src, &'src [Token], Vec<ExprNodeId>, extra::Err<ParseError<'src>>> + Clone {
     expr.separated_by(just(Token::Comma))
         .allow_trailing()
         .collect::<Vec<_>>()
 }
 
-fn op_parser<'a, I>(
+fn op_parser<'src, I>(
     apply: I,
     ctx: ParseContext,
-) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone + 'a
+) -> impl Parser<'src, &'src [Token], ExprNodeId, extra::Err<ParseError<'src>>> + Clone
 where
-    I: Parser<Token, ExprNodeId, Error = ParseError> + Clone + 'a,
+    I: Parser<'src, &'src [Token], ExprNodeId, extra::Err<ParseError<'src>>> + Clone,
 {
     let ctx = ctx.clone();
     let unary = select! { Token::Op(Op::Minus) => {} }
-        .map_with_span(|e, s| (e, s))
+        .map_with(|e, ex| (e, ex.span()))
         .repeated()
         .then(apply.clone())
         .foldr(move |(_op, op_span), rhs| {
@@ -232,7 +246,7 @@ where
         just(Token::Op(o))
             .try_map(|e, s| match e {
                 Token::Op(o) => Ok((o, s)),
-                _ => Err(Simple::custom(s, "Invalid operator used")),
+                _ => Err(Rich::custom(s, "Invalid operator used")),
             })
             .boxed()
     };
@@ -241,7 +255,7 @@ where
     let pipe = just(Token::LineBreak)
         .repeated()
         .then(just(Token::Op(Op::Pipe)))
-        .map_with_span(|_, s| (Op::Pipe, s))
+        .map_with(|_, ex| (Op::Pipe, ex.span().into_range()))
         .boxed();
     //defining binary operators in order of precedence.
     let ops = [
@@ -270,11 +284,11 @@ where
         binop_folder(acc, x, ctx.clone())
     })
 }
-fn atom_parser<'a>(
-    expr: ExprParser<'a>,
-    expr_group: ExprParser<'a>,
+fn atom_parser<'src>(
+    expr: ExprParser<'src>,
+    expr_group: ExprParser<'src>,
     ctx: ParseContext,
-) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone + 'a {
+) -> impl Parser<'src, &'src [Token], ExprNodeId, extra::Err<ParseError<'src>>> + Clone {
     let lambda = lvar_parser_typed(ctx.clone())
         .separated_by(just(Token::Comma))
         .delimited_by(
@@ -295,9 +309,9 @@ fn atom_parser<'a>(
         })
         .labelled("lambda");
     let macro_expand = select! { Token::MacroExpand(s) => Expr::Var(s) }
-        .map_with_span(move |e, span| {
+        .map_with(move |e, ex| {
             e.into_id(Location {
-                span,
+                span: ex.span().into_range(),
                 path: ctx.file_path,
             })
         })
@@ -315,9 +329,9 @@ fn atom_parser<'a>(
 
     let tuple = items_parser(expr.clone())
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
-        .map_with_span(move |e, span| {
+        .map_with(move |e, ex| {
             Expr::Tuple(e).into_id(Location {
-                span,
+                span: ex.span().into_range(),
                 path: ctx.file_path,
             })
         })
@@ -336,7 +350,7 @@ fn atom_parser<'a>(
         tuple,
     ))
 }
-fn expr_parser(expr_group: ExprParser<'_>, ctx: ParseContext) -> ExprParser<'_> {
+fn expr_parser<'src>(expr_group: ExprParser<'src>, ctx: ParseContext) -> ExprParser<'src> {
     recursive(|expr: Recursive<Token, ExprNodeId, ParseError>| {
         enum FoldItem {
             Args(Vec<ExprNodeId>),
@@ -344,7 +358,7 @@ fn expr_parser(expr_group: ExprParser<'_>, ctx: ParseContext) -> ExprParser<'_> 
         }
         let parenitems = items_parser(expr.clone())
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
-            .map_with_span(|args, args_span| (FoldItem::Args(args), args_span));
+            .map_with(|args, ex| (FoldItem::Args(args), ex.span()));
         let angle_paren_expr = expr
             .clone()
             .delimited_by(just(Token::ArrayBegin), just(Token::ArrayEnd))
@@ -371,10 +385,10 @@ fn expr_parser(expr_group: ExprParser<'_>, ctx: ParseContext) -> ExprParser<'_> 
         op_parser(apply, ctx)
     })
 }
-// fn expr_statement_parser<'a>(
-//     expr_group: ExprParser<'a>,
-//     then: ExprParser<'a>,
-// ) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone + 'a {
+// fn expr_statement_parser<'src>(
+//     expr_group: ExprParser<'src>,
+//     then: ExprParser<'src>,
+// ) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone + 'src {
 //     let let_stmt = just(Token::Let)
 //         .ignore_then(pattern_parser().clone())
 //         .then_ignore(just(Token::Assign))
@@ -394,16 +408,16 @@ fn expr_parser(expr_group: ExprParser<'_>, ctx: ParseContext) -> ExprParser<'_> 
 //         .labelled("assign");
 //     let_stmt.or(assign)
 // }
-fn validate_reserved_pat(id: &TypedPattern, span: Span) -> Result<(), ParseError> {
+fn validate_reserved_pat(id: &TypedPattern, span: SimpleSpan) -> Result<(), ParseError> {
     match &id.pat {
         Pattern::Single(symbol) => validate_reserved_ident(*symbol, span),
         _ => Ok(()),
     }
 }
 
-fn validate_reserved_ident(id: Symbol, span: Span) -> Result<(), ParseError> {
+fn validate_reserved_ident<'src>(id: Symbol, span: SimpleSpan) -> Result<(), ParseError<'src>> {
     if intrinsics::BUILTIN_SYMS.with(|syms| syms.binary_search(&id).is_ok()) {
-        Err(Simple::custom(
+        Err(Rich::custom(
             span,
             "Builtin functions cannot be re-defined.",
         ))
@@ -412,13 +426,13 @@ fn validate_reserved_ident(id: Symbol, span: Span) -> Result<(), ParseError> {
     }
 }
 
-fn statement_parser(
-    expr: ExprParser<'_>,
+fn statement_parser<'src>(
+    expr: ExprParser<'src>,
     ctx: ParseContext,
-) -> impl Parser<Token, (Statement, Location), Error = ParseError> + Clone + '_ {
+) -> impl Parser<'src, &'src [Token], (Statement, Location), extra::Err<ParseError<'src>>> + Clone {
     let let_ = just(Token::Let)
-        .ignore_then(pattern_parser(ctx.clone()).validate(|pat, span, emit| {
-            if let Err(e) = validate_reserved_pat(&pat, span.clone()) {
+        .ignore_then(pattern_parser(ctx.clone()).validate(|pat, ex, emit| {
+            if let Err(e) = validate_reserved_pat(&pat, ex.span()) {
                 emit(e);
             }
             pat
@@ -428,14 +442,12 @@ fn statement_parser(
         .map_with_span(|(ident, body), span| (Statement::Let(ident, body), span))
         .labelled("let");
     let letrec = just(Token::LetRec)
-        .ignore_then(
-            lvar_parser_typed(ctx.clone()).validate(|ident, span, emit| {
-                if let Err(e) = validate_reserved_ident(ident.id, span.clone()) {
-                    emit(e);
-                }
-                ident
-            }),
-        )
+        .ignore_then(lvar_parser_typed(ctx.clone()).validate(|ident, ex, emit| {
+            if let Err(e) = validate_reserved_ident(ident.id, ex.span()) {
+                emit(e);
+            }
+            ident
+        }))
         .then_ignore(just(Token::Assign))
         .then(expr.clone())
         .map_with_span(|(ident, body), span| (Statement::LetRec(ident, body), span))
@@ -456,10 +468,10 @@ fn statement_parser(
         )
     })
 }
-fn statements_parser(
-    expr: ExprParser<'_>,
+fn statements_parser<'src>(
+    expr: ExprParser<'src>,
     ctx: ParseContext,
-) -> impl Parser<Token, Option<ExprNodeId>, Error = ParseError> + Clone + '_ {
+) -> impl Parser<'src, &'src [Token], Option<ExprNodeId>, extra::Err<ParseError<'src>>> + Clone {
     statement_parser(expr, ctx)
         .separated_by(just(Token::LineBreak).or(just(Token::SemiColon)).repeated())
         .allow_leading()
@@ -468,16 +480,16 @@ fn statements_parser(
         .map(|stmts| into_then_expr(&stmts))
 }
 
-fn block_parser(
-    expr: ExprParser<'_>,
+fn block_parser<'src>(
+    expr: ExprParser<'src>,
     ctx: ParseContext,
-) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone + '_ {
+) -> impl Parser<'src, &'src [Token], ExprNodeId, extra::Err<ParseError<'src>>> + Clone {
     let stmts = statements_parser(expr, ctx.clone());
     stmts
         .delimited_by(just(Token::BlockBegin), just(Token::BlockEnd))
-        .map_with_span(move |stmts, span| {
+        .map_with(move |stmts, ex| {
             Expr::Block(stmts).into_id(Location {
-                span,
+                span: ex.span().into_range(),
                 path: ctx.file_path,
             })
         })
@@ -489,8 +501,8 @@ fn block_parser(
         ))
 }
 // expr_group contains let statement, assignment statement, function definiton,... they cannot be placed as an argument for apply directly.
-fn exprgroup_parser<'a>(ctx: ParseContext) -> ExprParser<'a> {
-    recursive(move |expr_group: ExprParser<'a>| {
+fn exprgroup_parser<'src>(ctx: ParseContext) -> ExprParser<'src> {
+    recursive(move |expr_group: ExprParser<'src>| {
         let expr = expr_parser(expr_group.clone(), ctx.clone());
 
         let block = block_parser(expr_group.clone(), ctx.clone());
@@ -503,9 +515,9 @@ fn exprgroup_parser<'a>(ctx: ParseContext) -> ExprParser<'a> {
             )
             .then(expr_group.clone())
             .then(just(Token::Else).ignore_then(expr_group.clone()).or_not())
-            .map_with_span(move |((cond, then), opt_else), span| {
+            .map_with(move |((cond, then), opt_else), ex| {
                 Expr::If(cond, then, opt_else).into_id(Location {
-                    span,
+                    span: ex.span().into_range(),
                     path: ctx.file_path,
                 })
             })
@@ -540,7 +552,9 @@ fn gen_unknown_function_type(
     )
     .into_id_with_location(loc)
 }
-fn func_parser(ctx: ParseContext) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone {
+fn func_parser<'src>(
+    ctx: ParseContext,
+) -> impl Parser<'src, &'src [Token], ExprNodeId, extra::Err<ParseError<'src>>> + Clone {
     let exprgroup = exprgroup_parser(ctx.clone());
     let lvar = lvar_parser_typed(ctx.clone());
     let blockstart = just(Token::BlockBegin)
@@ -556,7 +570,8 @@ fn func_parser(ctx: ParseContext) -> impl Parser<Token, ExprNodeId, Error = Pars
         .labelled("fnparams");
 
     let function_s = just(Token::Function)
-        .ignore_then(lvar.clone().validate(|ident, span, emit| {
+        .ignore_then(lvar.clone().validate(|ident, ex, emit| {
+            let span: SimpleSpan = ex.span();
             if let Err(e) = validate_reserved_ident(ident.id, span) {
                 emit(e);
             }
@@ -574,9 +589,9 @@ fn func_parser(ctx: ParseContext) -> impl Parser<Token, ExprNodeId, Error = Pars
                 _ => e,
             }),
         )
-        .map_with_span(move |(((fname, ids), r_type), block), span| {
+        .map_with(move |(((fname, ids), r_type), block), ex| {
             let loc = Location {
-                span: span.clone(),
+                span: ex.span().into_range(),
                 path: ctx.file_path,
             };
             let fname = TypedId {
@@ -618,14 +633,13 @@ fn func_parser(ctx: ParseContext) -> impl Parser<Token, ExprNodeId, Error = Pars
     let separator = just(Token::LineBreak).or(just(Token::SemiColon)).repeated();
     let stmts = stmt
         .map(|s: (Statement, Location)| vec![s])
-        .or(
-            preprocess_parser(ctx.clone()).map_with_span(move |e, span| {
-                stmt_from_expr_top(e)
-                    .into_iter()
-                    .map(|st| (st, Location::new(span.clone(), ctx.file_path)))
-                    .collect()
-            }),
-        )
+        .or(preprocess_parser(ctx.clone()).map_with(move |e, ex| {
+            let span: SimpleSpan = ex.span();
+            stmt_from_expr_top(e)
+                .into_iter()
+                .map(|st| (st, Location::new(span.into_range(), ctx.file_path)))
+                .collect()
+        }))
         .separated_by(separator)
         .allow_leading()
         .allow_trailing()
@@ -635,28 +649,27 @@ fn func_parser(ctx: ParseContext) -> impl Parser<Token, ExprNodeId, Error = Pars
     stmts
 }
 
-fn preprocess_parser(
+fn preprocess_parser<'src>(
     ctx: ParseContext,
-) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone {
+) -> impl Parser<'src, &'src [Token], ExprNodeId, extra::Err<ParseError<'src>>> + Clone {
     just(Token::Include)
         .ignore_then(
             select! {Token::Str(s) => s}
                 .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd)),
         )
-        .try_map(move |filename, span: Span| {
+        .try_map(move |filename, span: SimpleSpan| {
             let cfile = ctx.file_path.as_str();
-            let (c, errs) = resolve_include(cfile, &filename, span.clone());
+            let (c, errs) = resolve_include(cfile, &filename, span.into_range());
             if errs.is_empty() {
                 Ok(c)
             } else {
                 let e = errs.into_iter().fold(
-                    Simple::<Token>::custom(
+                    Rich::<Token>::custom(
                         span.clone(),
                         format!("failed to resolve include for {filename}"),
                     ),
                     |simple_e, reportable_e| {
-                        let wrapped =
-                            Simple::<Token>::custom(span.clone(), reportable_e.to_string());
+                        let wrapped = Rich::<Token>::custom(span.clone(), reportable_e.to_string());
                         wrapped.merge(simple_e)
                     },
                 );
@@ -664,9 +677,9 @@ fn preprocess_parser(
             }
         })
 }
-fn parser(
+fn parser<'src>(
     current_file: Option<PathBuf>,
-) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone {
+) -> impl Parser<'src, &'src [Token], ExprNodeId, extra::Err<ParseError<'src>>> + Clone {
     let separator = just(Token::LineBreak)
         .ignored()
         .or(just(Token::SemiColon).ignored());

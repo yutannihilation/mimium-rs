@@ -2,28 +2,29 @@ use crate::interner::Symbol;
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::Location;
 use chumsky;
+use chumsky::span::SimpleSpan;
 use std::fmt;
 use std::hash::Hash;
-// pub struct LexError(chumsky::error::Simple<char>);
+// pub struct LexError(chumsky::error::Rich<'src, char>);
 #[derive(Debug)]
-pub struct ParseError<T>
+pub struct ParseError<'a, T>
 where
     T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display,
 {
-    pub content: chumsky::error::Simple<T>,
+    pub content: chumsky::error::Rich<'a, T>,
     pub file: Symbol,
 }
 
-impl<T> From<ParseError<T>> for chumsky::error::Simple<T>
+impl<'a, T> From<ParseError<'a, T>> for chumsky::error::Rich<'a, T>
 where
     T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display,
 {
-    fn from(value: ParseError<T>) -> Self {
+    fn from(value: ParseError<'a, T>) -> Self {
         value.content
     }
 }
 
-impl<T> fmt::Display for ParseError<T>
+impl<'a, T> fmt::Display for ParseError<'a, T>
 where
     T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display,
 {
@@ -32,16 +33,19 @@ where
     }
 }
 
-impl<T> std::error::Error for ParseError<T> where T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display {}
+impl<'a, T> std::error::Error for ParseError<'a, T> where
+    T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display
+{
+}
 
-impl<T> ReportableError for ParseError<T>
+impl<'a, T> ReportableError for ParseError<'a, T>
 where
     T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display,
 {
     fn get_message(&self) -> String {
         match self.content.reason() {
-            chumsky::error::SimpleReason::Unexpected
-            | chumsky::error::SimpleReason::Unclosed { .. } => {
+            chumsky::error::RichReason::Unexpected
+            | chumsky::error::RichReason::Unclosed { .. } => {
                 format!(
                     "{}{}, expected {}",
                     if self.content.found().is_some() {
@@ -68,14 +72,15 @@ where
                     }
                 )
             }
-            chumsky::error::SimpleReason::Custom(msg) => msg.clone(),
+            chumsky::error::RichReason::Custom(msg) => msg.clone(),
         }
     }
 
     fn get_labels(&self) -> Vec<(Location, String)> {
+        let span: SimpleSpan = self.content.span().clone();
         vec![(
             Location {
-                span: self.content.span(),
+                span: span.into_range(),
                 path: self.file,
             },
             self.get_message(),

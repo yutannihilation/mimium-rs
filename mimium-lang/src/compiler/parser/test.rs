@@ -455,7 +455,7 @@ fn test_err_builtin_redefine() {
     assert_eq!(err.len(), 1);
 
     let err_ans: Box<dyn ReportableError> = Box::new(error::ParseError::<Token> {
-        content: Simple::custom(3..6, "Builtin functions cannot be re-defined.")
+        content: Rich::custom(3..6, "Builtin functions cannot be re-defined.")
             .with_label("function decl"),
         file: "/".to_symbol(),
     });
